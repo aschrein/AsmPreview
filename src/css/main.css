@@ -1,0 +1,86 @@
+.root {
+  height: 100vh;
+}
+
+body {
+  height: 100vh;
+  font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+
+.lm_root {
+  height: 100vh;
+}
+
+.goldenLayout {
+  height: 100vh;
+}
+
+.lm_content{
+  overflow: scroll;
+}
+
+.lm_content:has(.scrollable) {
+  overflow: scroll;
+}
+
+canvas {
+  margin: 0%;
+  image-rendering: optimizeSpeed;             /* Older versions of FF          */
+  image-rendering: -moz-crisp-edges;          /* FF 6.0+                       */
+  image-rendering: -webkit-optimize-contrast; /* Safari                        */
+  image-rendering: -o-crisp-edges;            /* OS X & Windows Opera (12.02+) */
+  image-rendering: pixelated;                 /* Awesome future-browsers       */
+  -ms-interpolation-mode: nearest-neighbor;   /* IE                            */
+}
+
+/* .lm_item_container{
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.lm_content{
+  width: 100%;
+  height: 100%;
+  overflow-y: scroll;
+  padding-right: 32px;
+  box-sizing: content-box;
+} 
+*/
+#editor {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+
+.ace_editor_container {
+  width: 100%;
+  height: 100%;
+}
+
+.Markdown * {
+  margin: 10px;
+  color: white;
+}
+.lm_content{
+  padding: 0%;
+}
+
+::-webkit-scrollbar {
+  width: 0px;  /* Remove scrollbar space */
+  background: transparent;  /* Optional: just make scrollbar invisible */
+}
+
+.lm_content {
+  -ms-overflow-style: none;  /* Internet Explorer 10+ */
+  scrollbar-width: none;  /* Firefox */
+}
+.lm_content::-webkit-scrollbar { 
+  display: none;  /* Safari and Chrome */
+}
+
+.margin_16 {
+  margin: 16px;
+}

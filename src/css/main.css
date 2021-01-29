@@ -91,3 +91,8 @@ canvas {
 .ace-tomorrow-night-eighties .ace_marker-layer .ace_selected-word {
   background-color: #ff0055
 }
+
+.DiffView > tr {
+  line-height: 12px;
+  font-size: 10px;
+}

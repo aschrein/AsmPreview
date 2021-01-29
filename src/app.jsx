@@ -13,6 +13,8 @@ import 'brace/ext/language_tools';
 import * as dat from 'dat.gui';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { Modal, Button, FormControl, Dropdown, DropdownButton } from 'react-bootstrap';
+import { PureComponent } from 'react';
+import ReactDiffViewer from 'react-diff-viewer';
 
 var define_hlsl = function () {
   let ace = global.ace;
@@ -597,6 +599,31 @@ define_hlsl();
 
 let global_state = {}
 
+let cleanup_asm = function (text) {
+  return text.replace(new RegExp("\/\/.*", "gm"), "")
+    .replace(new RegExp("v[0-9]+", "gm"), "v$")
+    .replace(new RegExp("s[0-9]+", "gm"), "s$")
+    .replace(new RegExp("label_[0-9]+", "gm"), "label_$")
+    .replace(new RegExp("s\[[0-9]+\:[0-9]+\]", "gm"), "s[$:$]")
+    .replace(/[^\S\r\n]+$/gm, '')
+    ;
+  // var out = ""
+  // var i = 0;
+  // while (true) {
+  //   if (i >= text.length - 1)
+  //     break;
+  //   let c0 = text[i];
+  //   let c1 = text[i + 1];
+  //   i++;
+  //   if (c0 == '/' && c1 == '/') {
+  //     i++;
+  //     while (text[i] != '\n' && i != text.length - 1)
+  //       i++;
+  //   } else
+  //     out += c0;
+  // }
+  // return out;
+}
 class TextEditorComponent extends React.Component {
 
   constructor(props, context) {
@@ -625,402 +652,49 @@ class TextEditorComponent extends React.Component {
 #define float4_splat(x)  float4(x, x, x, x)
 
 struct PushConstants {
-  float4x4 model;
-  u32      normal_offset;
-  u32      normal_stride;
-  u32      position_offset;
-  u32      position_stride;
-  u32      first_vertex;
-  u32      index_offset;
-  u32      index_count;
-  u32      index_stride;
   u32      flags;
+  u32      mip_level;
+  u32      num_items;
 };
 
-#define RASTERIZATION_FLAG_CULL_PIXELS 0x1
+[[vk::push_constant]] ConstantBuffer<PushConstants> pc : DX12_PUSH_CONSTANTS_REGISTER;
 
-#define RASTERIZATION_GROUP_SIZE 64
+// [[vk::binding(0, 0)]] Texture2D<float4> position_source : register(t0, space0);
+// [[vk::binding(1, 0)]] Texture2D<float4> normal_source : register(t1, space0);
+// // Target Buffers
+// [[vk::binding(2, 0)]] RWTexture2D<float4> normal_target : register(u2, space0);
+// [[vk::binding(3, 0)]] RWTexture2D<uint>   depth_target : register(u3, space0);
+// // Atomic counter for max pixels/triangle per patch
+// [[vk::binding(4, 0)]] RWTexture2D<uint> counter_grid : register(u4, space0);
 
-struct FrameConstants {
-  float4x4 viewproj;
-};
+// [[vk::binding(5, 0)]] SamplerState ss : register(s5, space0);
 
-struct GI_PushConstants {
-  float4x4 model;
-  u32      cell_x;
-  u32      cell_y;
-  u32      flags;
-};
-#define COUNTER_GRID_RESOLUTION 16
-#define GI_RASTERIZATION_GROUP_SIZE 8
-#define GI_RASTERIZATION_FLAG_PIXEL_COLOR_TRIANGLES 0x2
+// //
+[[vk::binding(0, 0)]] RWByteAddressBuffer buf0 : register(u0, space0);
+[[vk::binding(1, 0)]] RWByteAddressBuffer buf1 : register(u1, space0);
+// [[vk::binding(7, 0)]] RWTexture2D<uint>   prev_counter_grid : register(u7, space0);
 
-[[vk::push_constant]] ConstantBuffer<GI_PushConstants> pc : DX12_PUSH_CONSTANTS_REGISTER;
 
-[[vk::binding(0, 1)]] ConstantBuffer<FrameConstants> fc : register(b0, space1);
-
-// Buffer for debugging
-// [[vk::binding(0, 2)]] RWByteAddressBuffer feedback_buffer : register(u0, space2);
-
-// Source Buffers
-[[vk::binding(0, 0)]] Texture2D<float4> position_source : register(t0, space0);
-[[vk::binding(1, 0)]] Texture2D<float4> normal_source : register(t1, space0);
-// Target Buffers
-[[vk::binding(2, 0)]] RWTexture2D<float4> normal_target : register(u2, space0);
-[[vk::binding(3, 0)]] RWTexture2D<uint>   depth_target : register(u3, space0);
-// Atomic counter for max pixels/triangle per patch
-[[vk::binding(4, 0)]] RWTexture2D<uint> counter_grid : register(u4, space0);
-
-[[vk::binding(5, 0)]] SamplerState ss : register(s5, space0);
-
-//
-[[vk::binding(6, 0)]] RWByteAddressBuffer indirect_arg_buffer : register(u6, space0);
-[[vk::binding(7, 0)]] RWTexture2D<uint>   prev_counter_grid : register(u7, space0);
-
-struct IndirectArgs {
-  u32 dimx;
-  u32 dimy;
-  u32 dimz;
-};
-
-bool in_bounds(float4 p) { return p.w > 0.0 && p.z > 0.0 && abs(p.x) < p.w && abs(p.y) < p.w; }
-
-bool outside(int2 e1, int2 e2) { return e2.x * e1.y - e2.y * e1.x < 0; }
-bool outside(float2 e1, float2 e2) { return e2.x * e1.y - e2.y * e1.x < 0.0f; }
-
-void add_sample(float2 uv, u32 num) {
-  u32 width, height;
-  counter_grid.GetDimensions(width, height);
-  u32 ix = uv.x * width;
-  u32 iy = uv.y * height;
-  InterlockedMax(counter_grid[int2(ix, iy)], num);
-  // InterlockedAdd(counter_grid[int2(ix, iy)], num);
+[numthreads(64, 1, 1)]
+void main(uint3 tid : SV_DispatchThreadID) {
+  if (tid.x >= pc.num_items)
+      return;
+  float x = buf0.Load<float>(sizeof(float) * tid.x);
+  int  ix = int(x);
+  // buf1.Store<float>(sizeof(float) * tid.x, pow(0.5, ix));
+  buf1.Store<float>(sizeof(float) * tid.x, pc.mip_level >> ix);
 }
 
-float3 random_color(float2 uv) {
-  uv           = frac(uv * 15.718281828459045);
-  float3 seeds = float3(0.123, 0.456, 0.789);
-  seeds        = frac((uv.x + 0.5718281828459045 + seeds) *
-                ((seeds + fmod(uv.x, 0.141592653589793)) * 27.61803398875 + 4.718281828459045));
-  seeds        = frac((uv.y + 0.5718281828459045 + seeds) *
-                ((seeds + fmod(uv.y, 0.141592653589793)) * 27.61803398875 + 4.718281828459045));
-  seeds        = frac((0.5718281828459045 + seeds) *
-                ((seeds + fmod(uv.x, 0.141592653589793)) * 27.61803398875 + 4.718281828459045));
-  return seeds;
-}
-
-struct Vertex {
-  float4 v;
-  // float3 normal;
-  float2 uv;
-};
-
-// Returns the number of visible pixels
-// pp_i - position in clip space
-u32 rasterize_triangle(RWTexture2D<float4> target, Vertex vtx0, Vertex vtx1, Vertex vtx2,
-                        float mip_level) {
-  // Target resolution
-  uint width, height;
-  target.GetDimensions(width, height);
-
-  // float4 pp0 = vtx0.pos;
-  // float4 pp1 = vtx1.pos;
-  // float4 pp2 = vtx2.pos;
-  // float3 normal_0 = vtx0.normal;
-  // float3 normal_1 = vtx1.normal;
-  // float3 normal_2 = vtx2.normal;
-
-  // Edges
-  float2 n0 = vtx1.v.xy - vtx0.v.xy;
-  float2 n1 = vtx2.v.xy - vtx1.v.xy;
-  float2 n2 = vtx0.v.xy - vtx2.v.xy;
-
-  // Double area
-  float area2 = (n0.x * n2.y - n0.y * n2.x);
-
-  // Back/small triangle culling
-  if (area2 < 1.0e-6f) return 0;
-
-  // 2D Edge Normals
-  n0 = -float2(-n0.y, n0.x) / area2;
-  n1 = -float2(-n1.y, n1.x) / area2;
-  n2 = -float2(-n2.y, n2.x) / area2;
-
-  // Bounding Box
-  float2 fmin =
-      float2(min(vtx0.v.x, min(vtx1.v.x, vtx2.v.x)), min(vtx0.v.y, min(vtx1.v.y, vtx2.v.y)));
-  float2 fmax =
-      float2(max(vtx0.v.x, max(vtx1.v.x, vtx2.v.x)), max(vtx0.v.y, max(vtx1.v.y, vtx2.v.y)));
-
-  int2 imin = int2(fmin);
-  int2 imax = int2(fmax);
-
-  imax.x = min(width - 1, max(0, imax.x));
-  imax.y = min(height - 1, max(0, imax.y));
-
-  // Edge function values at the first (imin.x + 0.5f, imin.y + 0.5f) sample position
-  float2 first_sample = float2(imin) + float2(0.5f, 0.5f);
-  float  init_ef0     = dot(first_sample - vtx0.v.xy, n0);
-  float  init_ef1     = dot(first_sample - vtx1.v.xy, n1);
-  float  init_ef2     = dot(first_sample - vtx2.v.xy, n2);
-
-  u32 num_samples = 0;
-
-  // Bound the maximum triangle size to 8x8 pixels
-  // imax.x = imin.x + min(8, imax.x - imin.x);
-  // imax.y = imin.y + min(8, imax.y - imin.y);
-
-  //[unroll(8)]
-  //{
-  //  i32 x = imin.x + (imax.x - imin.x) / 2;
-  //  i32 y = imin.y + (imax.y - imin.y) / 2;
-  //  // Barycentrics
-  //  float b0 = 0.3f;
-  //  float b1 = 0.3f;
-  //  float b2 = 0.3f;
-  //  // Perspective correction
-  //  float bw    = b0 / pp0.w + b1 / pp1.w + b2 / pp2.w;
-  //  b0          = b0 / pp0.w / bw;
-  //  b1          = b1 / pp1.w / bw;
-  //  b2          = b2 / pp2.w / bw;
-  //  float depth = pp0.z * b0 + pp1.z * b1 + pp2.z * b2;
-  //  // Per pixel Attributes
-  //  // float2 pixel_uv = suv0 * b0 + suv1 * b1 + suv2 * b2;
-
-  //  // add tid.x * 1.0e-6f to avoid z-fight
-  //  u32 idepth = u32((depth)*1000000);
-  //  u32 next_depth;
-  //  InterlockedMax(depth_target[int2(x, y)], idepth, next_depth);
-  //  if (idepth > next_depth) {
-  //    num_samples++;
-  //    if (pc.flags & GI_RASTERIZATION_FLAG_PIXEL_COLOR_TRIANGLES)
-  //      // target[int2(x, y)] = float4(float2_splat(mip_level / 10.0f),
-  //      // random_color(suv0).z, 1.0f);
-  //      target[int2(x, y)] = float4(b0, b1, b2, 1.0f);
-  //    else {
-  //      float3 pixel_normal = normalize(normal_0 * b0 + normal_1 * b1 + normal_2 * b2);
-  //      target[int2(x, y)] =
-  //          float4(float3_splat(max(0.0f, dot(pixel_normal,
-  //          normalize(float3_splat(1.0f))))), 1.0f);
-  //    }
-  //  }
-  //}
-#if 1
-  for (i32 dy = 0; dy <= imax.y - imin.y; dy += 1) {
-
-    //[unroll(8)]
-    for (i32 dx = 0; dx <= imax.x - imin.x; dx += 1) {
-      i32   x   = imin.x + dx;
-      i32   y   = imin.y + dy;
-      float ef0 = init_ef0 + n0.y * float(dy) + n0.x * float(dx);
-      float ef1 = init_ef1 + n1.y * float(dy) + n1.x * float(dx);
-      float ef2 = init_ef2 + n2.y * float(dy) + n2.x * float(dx);
-      if (ef0 > 0.0f && ef1 > 0.0f && ef2 > 0.0f) {
-        // Barycentrics
-        float b0 = ef1;
-        float b1 = ef2;
-        float b2 = ef0;
-        // Perspective correction
-        float bw = b0 / vtx0.v.w + b1 / vtx1.v.w + b2 / vtx2.v.w;
-
-        b0          = b0 / vtx0.v.w / bw;
-        b1          = b1 / vtx1.v.w / bw;
-        b2          = b2 / vtx2.v.w / bw;
-        float depth = vtx0.v.z * b0 + vtx1.v.z * b1 + vtx2.v.z * b2;
-        // Per pixel Attributes
-        float2 pixel_uv = vtx0.uv * b0 + vtx1.uv * b1 + vtx2.uv * b2;
-
-        // add tid.x * 1.0e-6f to avoid z-fight
-        u32 idepth = u32((depth)*1000000);
-        u32 next_depth;
-        InterlockedMax(depth_target[int2(x, y)], idepth, next_depth);
-        if (idepth > next_depth) {
-          num_samples++;
-          if (pc.flags & GI_RASTERIZATION_FLAG_PIXEL_COLOR_TRIANGLES)
-            // target[int2(x, y)] = float4(float2_splat(mip_level / 10.0f),
-            // random_color(suv0).z, 1.0f);
-            target[int2(x, y)] = float4(b0, b1, b2, 1.0f);
-          else {
-            // float3 pixel_normal = normalize(normal_0 * b0 + normal_1 * b1 + normal_2 * b2);
-            float3 pixel_normal = normalize(normal_source.SampleLevel(ss, pixel_uv, mip_level).xyz);
-            target[int2(x, y)]  = float4(
-                float3_splat(max(0.0f, dot(pixel_normal, normalize(float3_splat(1.0f))))), 1.0f);
-          }
-        }
-      }
-      //// Increment edge functions
-      // ef0 += n0.x;
-      // ef1 += n1.x;
-      // ef2 += n2.x;
-    }
-  }
-#endif
-  return num_samples;
-}
-
-// Returns the number of visible pixels
-u32 gi_rasterize_quad(RWTexture2D<float4> target, Texture2D<float4> src_pos,
-                      Texture2D<float4> src_normal, float2 uv0, float uv_size,
-                      float4x4 obj_to_clip) {
-  // Target resolution
-  uint width, height;
-  target.GetDimensions(width, height);
-
-  // Resolution of the source images
-  u32 src_res;
-  {
-    uint width, height;
-    src_pos.GetDimensions(width, height);
-    src_res = width;
-  }
-  f32 mip_level = log2(1.0f + uv_size * f32(src_res));
-
-  u32 num_samples = 0;
-
-  float2 qsuv00 = uv0 + float2(0.0f, 0.0f);
-  float2 qsuv01 = uv0 + float2(0.0f, uv_size);
-  float2 qsuv10 = uv0 + float2(uv_size, 0.0f);
-  float2 qsuv11 = uv0 + float2(uv_size, uv_size);
-
-  float4 pp00 = position_source.SampleLevel(ss, qsuv00, mip_level).xyzw;
-  float4 pp01 = position_source.SampleLevel(ss, qsuv01, mip_level).xyzw;
-  float4 pp10 = position_source.SampleLevel(ss, qsuv10, mip_level).xyzw;
-  float4 pp11 = position_source.SampleLevel(ss, qsuv11, mip_level).xyzw;
-
-  // float3 normal_00 = src_normal.SampleLevel(ss, qsuv00, mip_level).xyz;
-  // float3 normal_01 = src_normal.SampleLevel(ss, qsuv01, mip_level).xyz;
-  // float3 normal_10 = src_normal.SampleLevel(ss, qsuv10, mip_level).xyz;
-  // float3 normal_11 = src_normal.SampleLevel(ss, qsuv11, mip_level).xyz;
-  pp00 = mul(obj_to_clip, float4(pp00.xyz, 1.0));
-  pp01 = mul(obj_to_clip, float4(pp01.xyz, 1.0));
-  pp10 = mul(obj_to_clip, float4(pp10.xyz, 1.0));
-  pp11 = mul(obj_to_clip, float4(pp11.xyz, 1.0));
-
-  // For simplicity just discard triangles that touch the boundary
-  // @TODO(aschrein): Add proper clipping.
-  bool tri_is_valid_0 = in_bounds(pp00) && in_bounds(pp01) && in_bounds(pp10);
-  bool tri_is_valid_1 = in_bounds(pp01) && in_bounds(pp10) && in_bounds(pp11);
-
-  pp00.xyz /= pp00.w;
-  pp01.xyz /= pp01.w;
-  pp10.xyz /= pp10.w;
-  pp11.xyz /= pp11.w;
-
-  //
-  // For simplicity, we assume samples are at pixel centers
-  //  __________
-  // |          |
-  // |          |
-  // |    X     |
-  // |          |
-  // |__________|
-  //
-
-  // Vertices scaled to window size so 1.5 is inside the second pixel
-  pp00.xy = float2(float(width) * (pp00.x + 1.0) / 2.0, float(height) * (-pp00.y + 1.0) / 2.0);
-  pp01.xy = float2(float(width) * (pp01.x + 1.0) / 2.0, float(height) * (-pp01.y + 1.0) / 2.0);
-  pp10.xy = float2(float(width) * (pp10.x + 1.0) / 2.0, float(height) * (-pp10.y + 1.0) / 2.0);
-  pp11.xy = float2(float(width) * (pp11.x + 1.0) / 2.0, float(height) * (-pp11.y + 1.0) / 2.0);
-
-#define RASTERIZE_TRIANGE                                                                          \
-  Vertex vtx0;                                                                                     \
-  Vertex vtx1;                                                                                     \
-  Vertex vtx2;                                                                                     \
-  vtx0.v  = cur_v0;                                                                                \
-  vtx1.v  = cur_v1;                                                                                \
-  vtx2.v  = cur_v2;                                                                                \
-  vtx0.uv = suv0;                                                                                  \
-  vtx1.uv = suv1;                                                                                  \
-  vtx2.uv = suv2;                                                                                  \
-  num_samples += rasterize_triangle(target, vtx0, vtx1, vtx2, mip_level);
-
-  //vtx0.normal = cur_normal_0;                                                                      \
-  //vtx1.normal = cur_normal_1;                                                                      \
-  //vtx2.normal = cur_normal_2;                                                                      \
-
-  if (tri_is_valid_0) {
-#ifdef GI_ORDER_CW
-    float2 suv0   = qsuv00;
-    float2 suv1   = qsuv01;
-    float2 suv2   = qsuv10;
-    float4 cur_v0 = pp00;
-    float4 cur_v1 = pp01;
-    float4 cur_v2 = pp10;
-    // float3 cur_normal_0 = normal_00;
-    // float3 cur_normal_1 = normal_01;
-    // float3 cur_normal_2 = normal_10;
-#else
-    float2 suv0   = qsuv00;
-    float2 suv1   = qsuv10;
-    float2 suv2   = qsuv01;
-    float4 cur_v0 = pp00;
-    float4 cur_v1 = pp10;
-    float4 cur_v2 = pp01;
-    // float3 cur_normal_0 = normal_00;
-    // float3 cur_normal_1 = normal_10;
-    // float3 cur_normal_2 = normal_01;
-#endif
-
-    RASTERIZE_TRIANGE
-  }
-  if (tri_is_valid_1) {
-#ifdef GI_ORDER_CW
-    float2 suv0   = qsuv10;
-    float2 suv1   = qsuv01;
-    float2 suv2   = qsuv11;
-    float4 cur_v0 = pp10;
-    float4 cur_v1 = pp01;
-    float4 cur_v2 = pp11;
-    // float3 cur_normal_0 = normal_10;
-    // float3 cur_normal_1 = normal_01;
-    // float3 cur_normal_2 = normal_11;
-#else
-    float2 suv0   = qsuv10;
-    float2 suv1   = qsuv11;
-    float2 suv2   = qsuv01;
-    float4 cur_v0 = pp10;
-    float4 cur_v1 = pp11;
-    float4 cur_v2 = pp01;
-    // float3 cur_normal_0 = normal_10;
-    // float3 cur_normal_1 = normal_11;
-    // float3 cur_normal_2 = normal_01;
-#endif
-
-    RASTERIZE_TRIANGE
-  }
-  return num_samples;
-}
-
-[numthreads(GI_RASTERIZATION_GROUP_SIZE, GI_RASTERIZATION_GROUP_SIZE, 1)] //
-    void
-    main(uint3 tid
-                      : SV_DispatchThreadID) {
-      u32 cell_x = pc.cell_x;
-      u32 cell_y = pc.cell_y;
-
-      u32 cell_res;
-      {
-        IndirectArgs args = indirect_arg_buffer.Load<IndirectArgs>(
-            12 * (pc.cell_x + pc.cell_y * COUNTER_GRID_RESOLUTION));
-        cell_res = args.dimx;
-      }
-      if (cell_res == 0) return;
-      float2 cell_uv = float2(cell_x, cell_y) / float(COUNTER_GRID_RESOLUTION);
-
-      u32 subcell_x = tid.x;
-      u32 subcell_y = tid.y;
-      f32 subcell_uv_step =
-          1.0f / float(cell_res * GI_RASTERIZATION_GROUP_SIZE * COUNTER_GRID_RESOLUTION);
-      float2 subcell_uv = cell_uv + float2(subcell_x, subcell_y) * subcell_uv_step;
-      u32 num_samples = gi_rasterize_quad(normal_target, position_source, normal_source, subcell_uv,
-                                          subcell_uv_step, mul(fc.viewproj, pc.model));
-      add_sample(subcell_uv + float2(subcell_uv_step, subcell_uv_step) / 2.0f, num_samples / 2);
-    }
 `
     );
   }
 
   onChange(newValue) {
+
+    // if (global_state.diff_viewer) {
+    //   global_state.diff_viewer.setState({ oldCode: this.text, newCode: newValue });
+    //   // global_state.diff_viewer.forceUpdate();
+    // }
     this.text = newValue;
     this.compile();
   }
@@ -1032,7 +706,7 @@ u32 gi_rasterize_quad(RWTexture2D<float4> target, Texture2D<float4> src_pos,
   save() {
     var xhr = new XMLHttpRequest()
     xhr.addEventListener('load', () => {
-      console.log(xhr.responseText);
+      // console.log(xhr.responseText);
       let json = JSON.parse(xhr.responseText);
       if ("token" in json) {
         this.token = json["token"];
@@ -1073,7 +747,7 @@ u32 gi_rasterize_quad(RWTexture2D<float4> target, Texture2D<float4> src_pos,
   compile() {
     var xhr = new XMLHttpRequest()
     xhr.addEventListener('load', () => {
-      console.log(xhr.responseText);
+      // console.log(xhr.responseText);
       let json = JSON.parse(xhr.responseText);
       // global_state.viewer.refs.editor.editor.setValue("");
       let new_spirv = ""
@@ -1085,6 +759,10 @@ u32 gi_rasterize_quad(RWTexture2D<float4> target, Texture2D<float4> src_pos,
       if ("asm" in json)
         new_asm += json["asm"];
       if (global_state.spirv_viewer) {
+        if (global_state.diff_viewer) {
+          global_state.diff_viewer.setState({ newCode: cleanup_asm(new_asm) });
+          global_state.diff_viewer.forceUpdate();
+        }
         global_state.spirv_viewer.refs.editor.editor.setValue(new_spirv);
         global_state.spirv_viewer.refs.editor.editor.clearSelection();
       }
@@ -1099,10 +777,10 @@ u32 gi_rasterize_quad(RWTexture2D<float4> target, Texture2D<float4> src_pos,
   }
 
   load() {
-    console.log("LOAD!");
+    // console.log("LOAD!");
     var xhr = new XMLHttpRequest()
     xhr.addEventListener('load', () => {
-      console.log(xhr.responseText);
+      // console.log(xhr.responseText);
       let json = JSON.parse(xhr.responseText);
       if ("text" in json)
         this.refs.editor.editor.setValue(json["text"]);
@@ -1121,11 +799,19 @@ u32 gi_rasterize_quad(RWTexture2D<float4> target, Texture2D<float4> src_pos,
           Compile
         </Button>
         <Button variant="primary" onClick={() => this.save()}>
-          Save
+          Save To DB
         </Button>
         <FormControl ref="token" type="text" placeholder="Token" onChange={e => { this.token = e.target.value; }} />
         <Button variant="primary" onClick={() => this.load()}>
           Load
+        </Button>
+        <Button variant="primary" onClick={() => {
+          if (global_state.diff_viewer) {
+            global_state.diff_viewer.setState({ oldCode: cleanup_asm(global_state.asm_viewer.text) });
+            global_state.diff_viewer.forceUpdate();
+          }
+        }} >
+          Set Diff
         </Button>
         <div id="teditor_gui_container">
         </div>
@@ -1247,6 +933,34 @@ class ASMComponent extends React.Component {
     );
   }
 }
+
+
+class Diff extends React.Component {
+  constructor(props, context) {
+    super(props, context);
+    global_state.diff_viewer = this;
+    this.state = {
+      oldCode: "void main() {}",
+      newCode: ""
+    };
+  }
+  render() {
+
+    // window.console.log(this.state);
+    return (
+      <div className="DiffView" >
+        <ReactDiffViewer
+          ref="viewer"
+          compareMethod="diffLines"
+          useDarkTheme='true'
+          oldValue={this.state.oldCode}
+          newValue={this.state.newCode}
+          splitView={true} />
+      </div>
+    );
+  }
+}
+
 class GoldenLayoutWrapper extends React.Component {
   constructor(props, context) {
     super(props, context);
@@ -1258,7 +972,7 @@ class GoldenLayoutWrapper extends React.Component {
     // Build basic golden-layout config
     const config = {
       content: [{
-        type: 'row',
+        type: 'column',
         content: [
           {
             type: 'column',
@@ -1272,17 +986,27 @@ class GoldenLayoutWrapper extends React.Component {
                 props: { globals: () => this.globals }
 
 
+              },
+              {
+                type: 'react-component',
+                isClosable: false,
+                component: 'VKASMDIFF',
+                title: 'Vk ASM diff',
+
+                props: { globals: () => this.globals }
+
+
               }
             ]
           },
           {
-            type: 'column',
+            type: 'stack',
             content: [
               {
                 type: 'react-component',
                 isClosable: false,
-                component: 'ASM',
-                title: 'ASM',
+                component: 'VKASM',
+                title: 'Vk ASM',
 
                 props: { globals: () => this.globals }
 
@@ -1312,8 +1036,11 @@ class GoldenLayoutWrapper extends React.Component {
     layout.registerComponent('SPIRV',
       SPIRVComponent
     );
-    layout.registerComponent('ASM',
+    layout.registerComponent('VKASM',
       ASMComponent
+    );
+    layout.registerComponent('VKASMDIFF',
+      Diff
     );
     layout.init();
     window.React = React;

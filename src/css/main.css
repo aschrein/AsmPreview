@@ -84,3 +84,10 @@ canvas {
 .margin_16 {
   margin: 16px;
 }
+
+.ace-vibrant-ink .ace_marker-layer .ace_selected-word {
+  background-color: #ff0055
+}
+.ace-tomorrow-night-eighties .ace_marker-layer .ace_selected-word {
+  background-color: #ff0055
+}

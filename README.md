@@ -1,26 +1,11 @@
-## Node editing thingy
-
-Just playing with javascript frameworks to make something that
- pushes pixels.
+# Assembly preview something something
 
 ## Build and run
 
 ```console
-npm install && npm start
+npm install && npm run build && cd build && python ../server.py 4000
 ```
 
 ## Notes
 
-* update wasm-pack, rustc etc
-* 'file:../pkg' creates a simlink to the folder, also npm install is needed
-
-## Used libraries
-* regl
-* three.js
-* React
-* [glslang fork](https://github.com/aschrein/glslang/tree/glslang_js_mod)
-* [litegraph](https://github.com/jagenjo/litegraph.js) - node editor
-* GoldenLayout
-* Ace
-
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+Need to have rga.exe and dxc.exe in PATH.

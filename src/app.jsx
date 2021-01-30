@@ -15,6 +15,7 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import { Modal, Button, FormControl, Dropdown, DropdownButton } from 'react-bootstrap';
 import { PureComponent } from 'react';
 import ReactDiffViewer from 'react-diff-viewer';
+import { JSONEditor } from 'react-json-editor-viewer';
 
 var define_hlsl = function () {
   let ace = global.ace;
@@ -603,8 +604,9 @@ let cleanup_asm = function (text) {
   return text.replace(new RegExp("\/\/.*", "gm"), "")
     .replace(new RegExp("v[0-9]+", "gm"), "v$")
     .replace(new RegExp("s[0-9]+", "gm"), "s$")
-    .replace(new RegExp("label_[0-9]+", "gm"), "label_$")
+    .replace(new RegExp("label_[0-9a-zA-Z]+", "gm"), "label_$")
     .replace(new RegExp("s\[[0-9]+\:[0-9]+\]", "gm"), "s[$:$]")
+    .replace(/(\r\n|\n|\r)/gm, "\n")
     .replace(/[^\S\r\n]+$/gm, '')
     ;
   // var out = ""
@@ -624,6 +626,64 @@ let cleanup_asm = function (text) {
   // }
   // return out;
 }
+
+class ParametersComponent extends React.Component {
+
+  constructor(props, context) {
+    super(props, context);
+
+    this.onChange = this.onChange.bind(this);
+    global_state.params = {
+      launch_params: {
+        num_elements: 4096,
+        num_launches: 100,
+        num_groups: 16,
+        show_result: 0,
+        param0: 8,
+        param1: 8,
+        param2: 8,
+        param3: 8,
+      }
+
+    };
+  }
+
+  componentDidMount() {
+  }
+
+  onChange(key, value, parent, data) {
+    // global_state.params[key] = value;
+    // console.log(parent);
+    // console.log(key);
+    // console.log(value);
+    // console.log(JSON.stringify(this.refs.params.state.data.root));
+    global_state.params = JSON.parse(JSON.stringify(this.refs.params.state.data.root));
+    // parent[key] = value;
+    // console.log(global_state.params);
+  }
+
+  updateParameters() {
+    this.refs.params.setState({ data: { root: global_state.params } });
+  }
+
+  render() {
+    return (
+      <div>
+        <p style={{ color: "white", margin: 10 }}>Params</p>
+        <JSONEditor
+          ref="params"
+          data={
+            global_state.params
+          }
+          onChange={this.onChange}
+        />
+
+
+      </div>
+    );
+  }
+}
+
 class TextEditorComponent extends React.Component {
 
   constructor(props, context) {
@@ -640,8 +700,7 @@ class TextEditorComponent extends React.Component {
   componentDidMount() {
     this.props.glContainer.on('resize', this.onResize);
     this.refs.editor.editor.setValue(
-      `
-#define DX12_PUSH_CONSTANTS_REGISTER register(b0, space777)
+      `#define DX12_PUSH_CONSTANTS_REGISTER register(b0, space777)
 #define u32 uint
 #define i32 int
 #define f32 float
@@ -652,40 +711,26 @@ class TextEditorComponent extends React.Component {
 #define float4_splat(x)  float4(x, x, x, x)
 
 struct PushConstants {
-  u32      flags;
-  u32      mip_level;
-  u32      num_items;
+  u32 param0;
+  u32 param1;
+  u32 param2;
+  u32 param3;
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> pc : DX12_PUSH_CONSTANTS_REGISTER;
-
-// [[vk::binding(0, 0)]] Texture2D<float4> position_source : register(t0, space0);
-// [[vk::binding(1, 0)]] Texture2D<float4> normal_source : register(t1, space0);
-// // Target Buffers
-// [[vk::binding(2, 0)]] RWTexture2D<float4> normal_target : register(u2, space0);
-// [[vk::binding(3, 0)]] RWTexture2D<uint>   depth_target : register(u3, space0);
-// // Atomic counter for max pixels/triangle per patch
-// [[vk::binding(4, 0)]] RWTexture2D<uint> counter_grid : register(u4, space0);
-
-// [[vk::binding(5, 0)]] SamplerState ss : register(s5, space0);
-
-// //
+// Buffer length = sizeof(u32) * num_elements
 [[vk::binding(0, 0)]] RWByteAddressBuffer buf0 : register(u0, space0);
 [[vk::binding(1, 0)]] RWByteAddressBuffer buf1 : register(u1, space0);
-// [[vk::binding(7, 0)]] RWTexture2D<uint>   prev_counter_grid : register(u7, space0);
-
 
 [numthreads(64, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {
-  if (tid.x >= pc.num_items)
-      return;
-  float x = buf0.Load<float>(sizeof(float) * tid.x);
-  int  ix = int(x);
-  // buf1.Store<float>(sizeof(float) * tid.x, pow(0.5, ix));
-  buf1.Store<float>(sizeof(float) * tid.x, pc.mip_level >> ix);
-}
-
-`
+  
+  for (u32 i = 0; i < pc.param0; i++) {
+    float4 x = buf0.Load<float4>(sizeof(float4) * (tid.x + i));
+    x.x = dot(x, x);
+    buf1.Store<float4>(sizeof(float4) * (tid.x + i), x);
+  }
+}`
     );
   }
 
@@ -696,7 +741,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     //   // global_state.diff_viewer.forceUpdate();
     // }
     this.text = newValue;
-    this.compile();
+    // this.compile();
   }
 
   onResize() {
@@ -760,7 +805,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
         new_asm += json["asm"];
       if (global_state.spirv_viewer) {
         if (global_state.diff_viewer) {
-          global_state.diff_viewer.setState({ newCode: cleanup_asm(new_asm) });
+          global_state.diff_viewer.setState({ newCode: (this.text + "\n\n" + cleanup_asm(new_asm)) });
           global_state.diff_viewer.forceUpdate();
         }
         global_state.spirv_viewer.refs.editor.editor.setValue(new_spirv);
@@ -772,7 +817,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
       }
     })
     xhr.open('POST', 'http://localhost:4000/')
-    xhr.send(JSON.stringify({ cmd: "compile", text: this.text }))
+    xhr.send(JSON.stringify({ cmd: "compile", text: this.text, config: global_state.params }))
     // window.console.log(this.text);
   }
 
@@ -795,23 +840,27 @@ void main(uint3 tid : SV_DispatchThreadID) {
 
     return (
       <div className="ace_editor_container">
+        <FormControl ref="token" type="text" placeholder="Token" onChange={e => { this.token = e.target.value; }} />
         <Button variant="primary" onClick={() => this.compile()}>
           Compile
         </Button>
         <Button variant="primary" onClick={() => this.save()}>
           Save To DB
         </Button>
-        <FormControl ref="token" type="text" placeholder="Token" onChange={e => { this.token = e.target.value; }} />
         <Button variant="primary" onClick={() => this.load()}>
           Load
         </Button>
         <Button variant="primary" onClick={() => {
           if (global_state.diff_viewer) {
-            global_state.diff_viewer.setState({ oldCode: cleanup_asm(global_state.asm_viewer.text) });
+            // console.log(cleanup_asm(global_state.asm_viewer.text))
+            global_state.diff_viewer.setState({
+              oldCode:
+                (this.text + "\n\n" + cleanup_asm(global_state.asm_viewer.text))
+            });
             global_state.diff_viewer.forceUpdate();
           }
         }} >
-          Set Diff
+          Set diff Src
         </Button>
         <div id="teditor_gui_container">
         </div>
@@ -978,14 +1027,25 @@ class GoldenLayoutWrapper extends React.Component {
             type: 'column',
             content: [
               {
-                type: 'react-component',
-                isClosable: false,
-                component: 'TextEditor',
-                title: 'Text Editor',
+                type: 'row',
+                content: [
+                  {
+                    type: 'react-component',
+                    isClosable: false,
+                    component: 'TextEditor',
+                    title: 'Text Editor',
+                    props: { globals: () => this.globals }
+                  },
+                  {
+                    type: 'react-component',
+                    isClosable: false,
+                    component: 'Params',
+                    title: 'Params',
+                    props: { globals: () => this.globals }
 
-                props: { globals: () => this.globals }
 
-
+                  }
+                ]
               },
               {
                 type: 'react-component',
@@ -1041,6 +1101,9 @@ class GoldenLayoutWrapper extends React.Component {
     );
     layout.registerComponent('VKASMDIFF',
       Diff
+    );
+    layout.registerComponent('Params',
+      ParametersComponent
     );
     layout.init();
     window.React = React;

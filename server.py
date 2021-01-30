@@ -3,6 +3,7 @@
 Usage::
     ./server.py [<port>]
 """
+from pathlib import Path
 import http
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import logging
@@ -20,7 +21,6 @@ conn.execute('''CREATE TABLE IF NOT EXISTS SOURCES
 conn.commit()
 conn.close()
 
-from pathlib import Path
 
 def rmdir(directory):
     directory = Path(directory)
@@ -31,8 +31,11 @@ def rmdir(directory):
             item.unlink()
     directory.rmdir()
 
+
 def launch_process(args):
     import subprocess
+    args = [str(x) for x in args]
+    print(args)
     process = subprocess.Popen(args,
                                stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
@@ -44,6 +47,7 @@ class S(http.server.SimpleHTTPRequestHandler):
     def setup(self):
         http.server.SimpleHTTPRequestHandler.setup(self)
         self.request.settimeout(60)
+
     def _set_response(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/html')
@@ -64,38 +68,25 @@ class S(http.server.SimpleHTTPRequestHandler):
         try:
             j = json.loads(raw_post_data)
             """
-            compile command:
-                {
-                    "cmd" : "compile",
-                    "text" : "void main() {}",
-                    "config" : { "option" : "value", ... }
-                }
-                response:
-                {
-                    "type" : "compilation_result",
-                    ["stderr" : "Failed due to..",]
-                    ["spirv" : "%int = OpTypeInt 32 1",]
-                    ["asm" : "s_getpc_b64   s[0:1]",]
-                    ["dxil" : "s_getpc_b64   s[0:1]",]
-                }
-            save command:
-                {
-                    "cmd" : "save",
-                    "text" : "void main() {}",
-                    "config" : { "option" : "value", ... }
-                }
-                response:
-                {
-                    "type" : "saved",
-                    "token" : "agegdsg08325jdxjga[,dg"
-                }
             """
             stderr = ""
             if j["cmd"] == "compile":
                 src = j["text"]
-                config = {}
+                config = {
+                    "launch_params": {
+                        "num_elements": 4096,
+                        "num_launches": 100,
+                        "num_groups": 16,
+                        "show_result": 1,
+                        "param0": 8,
+                        "param1": 8,
+                        "param2": 8,
+                        "param3": 8,
+                    }
+                }
                 if "config" in j:
                     config = j["config"]
+                launch_params = config["launch_params"]
                 hash_object = hashlib.sha1(post_data.encode('utf-8'))
                 hex_dig = hash_object.hexdigest()
                 import os
@@ -108,19 +99,32 @@ class S(http.server.SimpleHTTPRequestHandler):
                 f = open(this_path + ".hlsl", "wb")
                 f.write(src.encode('utf-8'))
                 f.close()
-                stdout, stderr0, retcode = launch_process(["dxc.exe", "-T", "cs_6_5", "-E", "main", this_path + ".hlsl", "-spirv",
-                                                           "-Fo", this_path + ".spv.o"])
-                stdout, stderr1, retcode = launch_process(["dxc.exe", "-T", "cs_6_5", "-E", "main", this_path + ".hlsl", "-spirv",
-                                                           "-Fc", this_path + ".spv.txt"])
-                stdout, stderr2, retcode = launch_process(["dxc.exe", "-T", "cs_6_5", "-E", "main", this_path + ".hlsl",
-                                                           "-Fc", this_path + ".dxil.txt"])
+                stdout, stderr0, retcode0 = launch_process(["dxc.exe", "-T", "cs_6_5", "-E", "main", this_path + ".hlsl", "-spirv",
+                                                            "-Fo", this_path + ".spv.o"])
+                stdout, stderr1, retcode1 = launch_process(["dxc.exe", "-T", "cs_6_5", "-E", "main", this_path + ".hlsl", "-spirv",
+                                                            "-Fc", this_path + ".spv.txt"])
+                # stdout, stderr2, retcode2 = launch_process(["dxc.exe", "-T", "cs_6_5", "-E", "main", this_path + ".hlsl",
+                #                                            "-Fc", this_path + ".dxil.txt"])
                 # os.remove("cache/" + hex_dig + ".hlsl")
-
+                stdout, stderr3, retcode3 = launch_process(
+                    ("dispatch_kernel.exe " + this_path +
+                     ".hlsl").split()
+                    + [launch_params["num_groups"]] + [launch_params["num_launches"]] + [launch_params["num_elements"]] + [launch_params["show_result"]] +
+                    [launch_params["param0"]] + [launch_params["param1"]] +
+                    [launch_params["param2"]] + [launch_params["param3"]]
+                )
                 spirv = ""
                 asm = ""
                 dxil = ""
+                duration = ""
+                print(stdout.decode('ascii'), stderr3.decode('ascii'))
+                if retcode3 == 0:
+                    try:
+                        duration = stdout.decode('ascii')
+                    except:
+                        pass
 
-                if retcode == 0:
+                if retcode0 == 0 and retcode1 == 0:
                     try:
                         f = open(this_path + ".spv.txt")
                         spirv = f.read()
@@ -134,13 +138,13 @@ class S(http.server.SimpleHTTPRequestHandler):
                 # TODO: DX12 root signature
                 # ./rga -s dx12 -c gfx1030 --cs cache/16380c5043/16380c50438b073ededa4577f540f134b4c78068.hlsl --cs-entry main --cs-mode cs_6_5 --isa isa.txt
 
-                stdout, stderr3, retcode = launch_process(
+                stdout, stderr4, retcode = launch_process(
                     ("rga -h -s vk-spv-offline --asic gfx1030 --isa " + this_path + ".txt --comp " + this_path + ".spv.o").split())
                 if retcode == 0:
                     try:
                         f = open(this_path.replace(
                             hex_dig, "gfx1030_" + hex_dig+"_comp") + ".txt")
-                        asm = f.read()
+                        asm = duration + f.read()
                         f.close()
                     except:
                         pass
@@ -148,14 +152,14 @@ class S(http.server.SimpleHTTPRequestHandler):
                     rmdir(cache_dir)
                 except:
                     pass
-                
+
                 self._set_response()
                 j = json.dumps({
                     "type": "compilation_result",
                     "spirv": spirv,
                     "dxil": dxil,
                     "asm": asm,
-                    "stderr": stderr0.decode('ascii') + stderr3.decode('ascii')
+                    "stderr": stderr0.decode('ascii') + stderr4.decode('ascii')
                 })
                 self.wfile.write("{}".format(j).encode('utf-8'))
                 return
@@ -197,16 +201,17 @@ class S(http.server.SimpleHTTPRequestHandler):
                 conn.commit()
                 cur = conn.cursor()
                 print("TOKEN:", str(token))
-                cur.execute("SELECT * FROM SOURCES WHERE HASH='{}'".format(token))
+                cur.execute(
+                    "SELECT * FROM SOURCES WHERE HASH='{}'".format(token))
                 rows = cur.fetchall()
-                text = ""
+                request = {}
                 if len(rows) > 0:
-                    text = json.loads(rows[0][1])["text"]
+                    request = json.loads(rows[0][1])
 
                 self._set_response()
                 j = json.dumps({
                     "type": "loaded",
-                    "text": text
+                    "request": request
                 })
                 self.wfile.write("{}".format(j).encode('utf-8'))
                 conn.close()
